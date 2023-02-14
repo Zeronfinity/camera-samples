@@ -21,16 +21,22 @@ import android.content.*
 import android.content.res.Configuration
 import android.graphics.Color
 import android.graphics.drawable.ColorDrawable
+import android.hardware.camera2.CameraCaptureSession
+import android.hardware.camera2.CaptureRequest
+import android.hardware.camera2.TotalCaptureResult
 import android.hardware.display.DisplayManager
 import android.os.Build
 import android.os.Bundle
 import android.provider.MediaStore
 import android.util.Log
+import android.util.Size
 import android.view.KeyEvent
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Toast
+import androidx.camera.camera2.interop.Camera2Interop
+import androidx.camera.camera2.interop.ExperimentalCamera2Interop
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.concurrent.futures.await
@@ -70,6 +76,7 @@ typealias LumaListener = (luma: Double) -> Unit
  * - Photo taking
  * - Image analysis
  */
+@ExperimentalCamera2Interop
 class CameraFragment : Fragment() {
 
     private var _fragmentCameraBinding: FragmentCameraBinding? = null
@@ -127,6 +134,9 @@ class CameraFragment : Fragment() {
         } ?: Unit
     }
 
+    var createViewTime: Long = 0
+    val captureCallback = CameraSessionCaptureCallback()
+
     override fun onResume() {
         super.onResume()
         // Make sure that all permissions are still present, since the
@@ -155,6 +165,7 @@ class CameraFragment : Fragment() {
             container: ViewGroup?,
             savedInstanceState: Bundle?
     ): View {
+        createViewTime = System.currentTimeMillis();
         _fragmentCameraBinding = FragmentCameraBinding.inflate(inflater, container, false)
         return fragmentCameraBinding.root
     }
@@ -249,6 +260,25 @@ class CameraFragment : Fragment() {
         bindCameraUseCases()
     }
 
+    inner class CameraSessionCaptureCallback : CameraCaptureSession.CaptureCallback() {
+        private var frameCount = 0
+        private val lock = Object()
+
+        override fun onCaptureCompleted(
+            session: CameraCaptureSession,
+            request: CaptureRequest,
+            result: TotalCaptureResult
+        ) {
+            synchronized(lock) {
+                while (frameCount < 5) {
+                    frameCount++
+                    val durationSinceOnCreateView = System.currentTimeMillis() - createViewTime
+                    Log.d(TAG, "frame no = $frameCount, durationSinceOnCreateView = $durationSinceOnCreateView ms")
+                }
+            }
+        }
+    }
+
     /** Declare and bind preview, capture and analysis use cases */
     private fun bindCameraUseCases() {
 
@@ -269,9 +299,13 @@ class CameraFragment : Fragment() {
         val cameraSelector = CameraSelector.Builder().requireLensFacing(lensFacing).build()
 
         // Preview
-        preview = Preview.Builder()
+        preview = Preview.Builder().also { builder ->
+                    Camera2Interop
+                        .Extender(builder)
+                        .setSessionCaptureCallback(captureCallback)
+                }
                 // We request aspect ratio but no resolution
-                .setTargetAspectRatio(screenAspectRatio)
+                .setTargetResolution(Size(600, 800))
                 // Set initial target rotation
                 .setTargetRotation(rotation)
                 .build()
@@ -290,7 +324,7 @@ class CameraFragment : Fragment() {
         // ImageAnalysis
         imageAnalyzer = ImageAnalysis.Builder()
                 // We request aspect ratio but no resolution
-                .setTargetAspectRatio(screenAspectRatio)
+                .setTargetResolution(Size(1080, 1440))
                 // Set initial target rotation, we will have to call this again if rotation changes
                 // during the lifecycle of this use case
                 .setTargetRotation(rotation)
@@ -301,7 +335,7 @@ class CameraFragment : Fragment() {
                         // Values returned from our analyzer are passed to the attached listener
                         // We log image analysis results here - you should do something useful
                         // instead!
-                        Log.d(TAG, "Average luminosity: $luma")
+//                        Log.d(TAG, "Average luminosity: $luma")
                     })
                 }
 
@@ -318,6 +352,8 @@ class CameraFragment : Fragment() {
             // camera provides access to CameraControl & CameraInfo
             camera = cameraProvider.bindToLifecycle(
                     this, cameraSelector, preview, imageCapture, imageAnalyzer)
+
+            camera!!.cameraControl.setLinearZoom(0.35f)
 
             // Attach the viewfinder's surface provider to preview use case
             preview?.setSurfaceProvider(fragmentCameraBinding.viewFinder.surfaceProvider)
